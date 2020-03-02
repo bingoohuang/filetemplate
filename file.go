@@ -50,33 +50,50 @@ type File struct {
 }
 
 // Execute executes the file request.
-func (f File) Execute() error {
-	if err := writeContent(f.Filename, f.Content); err != nil {
-		return err
+func (f File) Execute() (interface{}, error) {
+	vv := make([]interface{}, 0)
+
+	if v, err := writeContent(f.Filename, f.Content); err != nil {
+		return vv, err
+	} else if v != nil {
+		vv = append(vv, v)
 	}
 
-	if err := f.writeMainSubs(); err != nil {
-		return err
+	if v, err := f.writeSubs(); err != nil {
+		return vv, err
+	} else if v != nil {
+		vv = append(vv, v)
 	}
 
-	return f.reload()
+	if v, err := f.reload(); err != nil {
+		return vv, err
+	} else if v != nil {
+		vv = append(vv, v)
+	}
+
+	return vv, nil
 }
 
-func writeContent(file, content string) error {
-	if content == "" {
-		return nil
-	}
-
+func writeContent(file, content string) (interface{}, error) {
 	filename := fixFileName(file)
 	fs, err := os.Stat(filename)
 
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 
 	if err == nil { // 文件已经存在
+		old, err := ioutil.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+
+		if content == string(old) {
+			return fmt.Sprintf("file %s's content is same with the old", filename), nil
+		}
+
 		if err := renameFile(filename); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -85,7 +102,7 @@ func writeContent(file, content string) error {
 		mode = fs.Mode()
 	}
 
-	return ioutil.WriteFile(filename, []byte(content), mode)
+	return ioutil.WriteFile(filename, []byte(content), mode), nil
 }
 
 func renameFile(filename string) error {
@@ -109,9 +126,9 @@ func fixFileName(filename string) string {
 	return expand
 }
 
-func (f File) writeMainSubs() error {
+func (f File) writeSubs() (interface{}, error) {
 	if f.SubDir == "" || len(f.Subs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	subDir := fixFileName(f.SubDir)
@@ -120,37 +137,41 @@ func (f File) writeMainSubs() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(subDir, 0777); err != nil {
-				return fmt.Errorf("failed to create dir %s, error %w", subDir, err)
+				return nil, fmt.Errorf("failed to create dir %s, error %w", subDir, err)
 			}
 		} else {
-			return fmt.Errorf("failed to os.Stat %s, error %w", subDir, err)
+			return nil, fmt.Errorf("failed to os.Stat %s, error %w", subDir, err)
 		}
 	}
 
 	if !fs.IsDir() {
-		return fmt.Errorf("subDir should be a direcory %s", subDir)
+		return nil, fmt.Errorf("subDir should be a direcory %s", subDir)
 	}
 
 	switch f.SubMode {
 	case "":
 		return f.overwriteSubsDirectly(subDir)
 	case "overwrite":
-		return f.overwriteSubs(subDir)
+		return nil, f.overwriteSubs(subDir)
 	default:
-		return fmt.Errorf("unknown subMode %s, required (empty) or overwrite", f.SubMode)
+		return nil, fmt.Errorf("unknown subMode %s, required (empty) or overwrite", f.SubMode)
 	}
 }
 
-func (f File) overwriteSubsDirectly(dir string) error {
+func (f File) overwriteSubsDirectly(dir string) (interface{}, error) {
+	vv := make([]interface{}, 0, len(f.Subs))
+
 	for subFile, subContent := range f.Subs {
 		subFilename := filepath.Join(dir, subFile)
 
-		if err := writeContent(subFilename, subContent); err != nil {
-			return err
+		if v, err := writeContent(subFilename, subContent); err != nil {
+			return v, err
+		} else if v != nil {
+			vv = append(vv, v)
 		}
 	}
 
-	return nil
+	return vv, nil
 }
 
 func (f File) overwriteSubs(dir string) error {
@@ -163,9 +184,9 @@ func (f File) overwriteSubs(dir string) error {
 	})
 }
 
-func (f File) reload() error {
+func (f File) reload() (interface{}, error) {
 	if f.Reload == "" {
-		return nil
+		return nil, nil
 	}
 
 	pid := FindPid(f.PID)
@@ -175,7 +196,7 @@ func (f File) reload() error {
 
 	reloadCmd := substitute(f.Reload, varMap)
 	if reloadCmd == "" {
-		return fmt.Errorf("reload %s evaluated to empty", f.Reload)
+		return nil, fmt.Errorf("reload %s evaluated to empty", f.Reload)
 	}
 
 	logrus.Infof("reload %s evaluated to %s", f.Reload, reloadCmd)
@@ -185,7 +206,7 @@ func (f File) reload() error {
 		logrus.Infof("reload %s successfully", reloadCmd)
 	} else if r.Error != nil {
 		logrus.Infof("reload %s failed, error %v", reloadCmd, r.Error)
-		return r.Error
+		return nil, r.Error
 	}
 
 	if len(r.Stdout) > 0 {
@@ -196,7 +217,7 @@ func (f File) reload() error {
 		logrus.Infof("reload %s returned stderr %v", reloadCmd, r.Stderr)
 	}
 
-	return nil
+	return "reloaded successfully", nil
 }
 
 func substitute(s string, vars map[string]string) string {

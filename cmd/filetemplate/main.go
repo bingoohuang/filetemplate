@@ -44,9 +44,9 @@ type serveHandler func(w http.ResponseWriter, r *http.Request)
 
 type resp struct {
 	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data"`
-	Error   interface{} `json:"error"`
+	Message string      `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+	Error   interface{} `json:"error,omitempty"`
 }
 
 type clientError struct {
@@ -80,12 +80,12 @@ func (c *clientError) GetCode() int {
 	return c.Code
 }
 
-func wrap(f func(w http.ResponseWriter, r *http.Request) error) serveHandler {
+func wrap(f func(w http.ResponseWriter, r *http.Request) (interface{}, error)) serveHandler {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := f(w, r); err != nil {
+		if v, err := f(w, r); err != nil {
 			_ = writeError(w, err)
 		} else {
-			_ = writeJSON(w, resp{Code: 0, Message: "OK"})
+			_ = writeJSON(w, resp{Code: 0, Message: "OK", Data: v})
 		}
 	}
 }
@@ -120,20 +120,20 @@ func writeJSON(w http.ResponseWriter, v interface{}) error {
 	return nil
 }
 
-func file(w http.ResponseWriter, r *http.Request) error {
+func file(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	body := r.Body
 	defer body.Close()
 
 	bodyBytes, err := ioutil.ReadAll(body)
 	if err != nil {
-		return &clientError{Message: "fail to ioutil.ReadAll %v", Err: err}
+		return nil, &clientError{Message: "fail to ioutil.ReadAll %v", Err: err}
 	}
 
 	f := &filetemplate.File{}
 
 	err = json.Unmarshal(bodyBytes, f)
 	if err != nil {
-		return &clientError{Message: "fail to json.Unmarshal %v", Err: err}
+		return nil, &clientError{Message: "fail to json.Unmarshal %v", Err: err}
 	}
 
 	return f.Execute()
