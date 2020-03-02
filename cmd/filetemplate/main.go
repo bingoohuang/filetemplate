@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/bingoohuang/filetemplate"
-	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"net/http"
+
+	"github.com/bingoohuang/filetemplate"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -34,9 +35,9 @@ func (c *clientError) Error() string {
 	if c.Message != "" {
 		if c.Err != nil {
 			return fmt.Sprintf(c.Message, c.Err)
-		} else {
-			return c.Message
 		}
+
+		return c.Message
 	}
 
 	if c.Err != nil {
@@ -48,18 +49,18 @@ func (c *clientError) Error() string {
 
 func (c *clientError) GetCode() int {
 	if c.Code == 0 {
-		return 400
+		return http.StatusBadRequest
 	}
 
 	return c.Code
 }
 
-func wrap(f func(w http.ResponseWriter, r *http.Request) (interface{}, error)) serveHandler {
+func wrap(f func(w http.ResponseWriter, r *http.Request) error) serveHandler {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if b, err := f(w, r); err != nil {
+		if err := f(w, r); err != nil {
 			_ = writeError(w, err)
 		} else {
-			_ = writeJSON(w, b)
+			_ = writeJSON(w, resp{Code: 0, Message: "OK"})
 		}
 	}
 }
@@ -94,20 +95,20 @@ func writeJSON(w http.ResponseWriter, v interface{}) error {
 	return nil
 }
 
-func file(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+func file(w http.ResponseWriter, r *http.Request) error {
 	body := r.Body
 	defer body.Close()
 
 	bodyBytes, err := ioutil.ReadAll(body)
 	if err != nil {
-		return nil, &clientError{Message: "fail to ioutil.ReadAll %v", Err: err}
+		return &clientError{Message: "fail to ioutil.ReadAll %v", Err: err}
 	}
 
 	f := &filetemplate.File{}
 
 	err = json.Unmarshal(bodyBytes, f)
 	if err != nil {
-		return nil, &clientError{Message: "fail to json.Unmarshal %v", Err: err}
+		return &clientError{Message: "fail to json.Unmarshal %v", Err: err}
 	}
 
 	return f.Execute()

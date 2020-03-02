@@ -2,11 +2,16 @@ package filetemplate
 
 import (
 	"fmt"
-	"github.com/mitchellh/go-homedir"
-	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/gobars/cmd"
+
+	homedir "github.com/mitchellh/go-homedir"
+	"github.com/sirupsen/logrus"
 )
 
 // File is the structure for config file
@@ -44,40 +49,52 @@ type File struct {
 	PID string `json:"pid,omitempty"`
 }
 
-func (f File) Execute() (interface{}, error) {
-	v, err := f.writeMainContent()
-	if err != nil {
-		return v, err
+// Execute executes the file request.
+func (f File) Execute() error {
+	if err := writeContent(f.Filename, f.Content); err != nil {
+		return err
 	}
 
-	return f.writeMainSubs()
+	if err := f.writeMainSubs(); err != nil {
+		return err
+	}
+
+	return f.reload()
 }
 
-func (f File) writeMainContent() (interface{}, error) {
-	if f.Content == "" {
-		return nil, nil
+func writeContent(file, content string) error {
+	if content == "" {
+		return nil
 	}
 
-	filename := f.fixFileName(f.Filename)
+	filename := fixFileName(file)
 	fs, err := os.Stat(filename)
 
 	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+		return err
 	}
 
 	if err == nil { // 文件已经存在
-		t := time.Now().Format("20060102150405000")
-		renamed := filename + "." + t
-		if err := os.Rename(filename, renamed); err != nil {
-			return nil, fmt.Errorf("failed to rename to %s failed, error %v", renamed, err)
+		if err := renameFile(filename); err != nil {
+			return err
 		}
 	}
 
-	return nil, ioutil.WriteFile(filename, []byte(f.Content), fs.Mode())
-
+	return ioutil.WriteFile(filename, []byte(content), fs.Mode())
 }
 
-func (f File) fixFileName(filename string) string {
+func renameFile(filename string) error {
+	t := time.Now().Format("20060102150405000")
+	renamed := filename + "." + t
+
+	if err := os.Rename(filename, renamed); err != nil {
+		return fmt.Errorf("failed to rename to %s failed, error %v", renamed, err)
+	}
+
+	return nil
+}
+
+func fixFileName(filename string) string {
 	expand, err := homedir.Expand(filename)
 	if err != nil {
 		logrus.Warnf("failed to expand homedir for %s, error %v", filename, err)
@@ -87,42 +104,119 @@ func (f File) fixFileName(filename string) string {
 	return expand
 }
 
-func (f File) writeMainSubs() (interface{}, error) {
+func (f File) writeMainSubs() error {
 	if f.SubDir == "" || len(f.Subs) == 0 {
-		return nil, nil
+		return nil
 	}
 
-	subDir := f.fixFileName(f.SubDir)
+	subDir := fixFileName(f.SubDir)
 	fs, err := os.Stat(subDir)
 
 	if err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(subDir, 0777); err != nil {
-				return nil, fmt.Errorf("failed to create dir %s, error %w", subDir, err)
+				return fmt.Errorf("failed to create dir %s, error %w", subDir, err)
 			}
 		} else {
-			return nil, fmt.Errorf("failed to os.Stat %s, error %w", subDir, err)
+			return fmt.Errorf("failed to os.Stat %s, error %w", subDir, err)
 		}
 	}
 
 	if !fs.IsDir() {
-		return nil, fmt.Errorf("subDir should be a direcory %s", subDir)
+		return fmt.Errorf("subDir should be a direcory %s", subDir)
 	}
 
 	switch f.SubMode {
 	case "":
-		return f.overwriteSubsDirectly()
+		return f.overwriteSubsDirectly(subDir)
 	case "overwrite":
-		return f.overwriteSubs()
+		return f.overwriteSubs(subDir)
 	default:
-		return nil, fmt.Errorf("unknown subMode %s, required (empty)  or overwrite", f.SubMode)
+		return fmt.Errorf("unknown subMode %s, required (empty) or overwrite", f.SubMode)
 	}
 }
 
-func (f File) overwriteSubsDirectly() (interface{}, error) {
+func (f File) overwriteSubsDirectly(dir string) error {
+	for subFile, subContent := range f.Subs {
+		subFilename := filepath.Join(dir, subFile)
 
+		if err := writeContent(subFilename, subContent); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func (f File) overwriteSubs() (interface{}, error) {
+func (f File) overwriteSubs(dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
 
+		return renameFile(path)
+	})
+}
+
+func (f File) reload() error {
+	if f.Reload == "" {
+		return nil
+	}
+
+	pid := FindPid(f.PID)
+	varMap := map[string]string{
+		"pid": pid,
+	}
+
+	reloadCmd := substitute(f.Reload, varMap)
+	if reloadCmd == "" {
+		return fmt.Errorf("reload %s evaluated to empty", f.Reload)
+	}
+
+	logrus.Infof("reload %s evaluated to %s", f.Reload, reloadCmd)
+
+	_, r := cmd.Bash(reloadCmd, cmd.Timeout(10*time.Second)) // nolint gomnd
+	if r.Exit == 0 {
+		logrus.Infof("reload %s successfully", reloadCmd)
+	} else if r.Error != nil {
+		logrus.Infof("reload %s failed, error %v", reloadCmd, r.Error)
+		return r.Error
+	}
+
+	if len(r.Stdout) > 0 {
+		logrus.Infof("reload %s returned stdout %v", reloadCmd, r.Stdout)
+	}
+
+	if len(r.Stderr) > 0 {
+		logrus.Infof("reload %s returned stderr %v", reloadCmd, r.Stderr)
+	}
+
+	return nil
+}
+
+func substitute(s string, vars map[string]string) string {
+	replaced := ""
+
+	for {
+		startPos := strings.Index(s, `${`)
+		if startPos < 0 {
+			replaced += s
+			break
+		}
+
+		replaced += s[:startPos]
+		s = s[startPos+2:]
+		endPos := strings.Index(s, "}")
+
+		if endPos < 0 {
+			break
+		}
+
+		substituteVar := strings.ToLower(strings.TrimSpace(s[:endPos]))
+		substituteVal := vars[substituteVar]
+		replaced += substituteVal
+		s = s[endPos+1:]
+	}
+
+	return replaced
 }
