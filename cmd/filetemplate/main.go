@@ -6,13 +6,38 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 
 	"github.com/bingoohuang/filetemplate"
+	flags "github.com/jessevdk/go-flags"
 	"github.com/sirupsen/logrus"
 )
 
+// App defines the current app
+type App struct {
+	Addr string `short:"a" long:"addr" description:"bind address" default:":3003"`
+}
+
 func main() {
+	app := &App{}
+
+	_, err := flags.Parse(app)
+	if err != nil {
+		if e, ok := err.(*flags.Error); ok && e.Type == flags.ErrHelp {
+			os.Exit(0)
+		}
+
+		os.Exit(1) // nolint gomnd
+	}
+
+	logrus.Infof("app started at %s", app.Addr)
+
 	http.HandleFunc("/file", wrap(file))
+
+	if err := http.ListenAndServe(app.Addr, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "ListenAndServe error %v", err)
+		os.Exit(1) // nolint gomnd
+	}
 }
 
 type serveHandler func(w http.ResponseWriter, r *http.Request)

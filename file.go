@@ -80,7 +80,12 @@ func writeContent(file, content string) error {
 		}
 	}
 
-	return ioutil.WriteFile(filename, []byte(content), fs.Mode())
+	var mode os.FileMode = 0777
+	if fs != nil {
+		mode = fs.Mode()
+	}
+
+	return ioutil.WriteFile(filename, []byte(content), mode)
 }
 
 func renameFile(filename string) error {
